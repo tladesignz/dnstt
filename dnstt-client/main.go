@@ -39,13 +39,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	pt "git.torproject.org/pluggable-transports/goptlib.git"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -85,7 +89,11 @@ func readKeyFromFile(filename string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+
+	defer func() {
+		_ = f.Close()
+	}()
+
 	return noise.ReadKey(f)
 }
 
@@ -121,7 +129,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	}
 	defer func() {
 		log.Printf("end stream %08x:%d", conv, stream.ID())
-		stream.Close()
+		_ = stream.Close()
 	}()
 	log.Printf("begin stream %08x:%d", conv, stream.ID())
 
@@ -137,8 +145,8 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Printf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
 		}
-		local.CloseRead()
-		stream.Close()
+		_ = local.CloseRead()
+		_ = stream.Close()
 	}()
 	go func() {
 		defer wg.Done()
@@ -150,37 +158,38 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Printf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
 		}
-		local.CloseWrite()
+		_ = local.CloseWrite()
 	}()
 	wg.Wait()
 
 	return err
 }
 
-func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) error {
-	defer pconn.Close()
-
+func listen(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) (*net.TCPListener, *kcp.UDPSession, *smux.Session, error) {
 	ln, err := net.ListenTCP("tcp", localAddr)
 	if err != nil {
-		return fmt.Errorf("opening local listener: %v", err)
+		_ = pconn.Close()
+
+		return nil, nil, nil, fmt.Errorf("opening local listener: %v", err)
 	}
-	defer ln.Close()
 
 	mtu := dnsNameCapacity(domain) - 8 - 1 - numPadding - 1 // clientid + padding length prefix + padding + data length prefix
 	if mtu < 80 {
-		return fmt.Errorf("domain %s leaves only %d bytes for payload", domain, mtu)
+		_ = pconn.Close()
+		_ = ln.Close()
+
+		return nil, nil, nil, fmt.Errorf("domain %s leaves only %d bytes for payload", domain, mtu)
 	}
 	log.Printf("effective MTU %d", mtu)
 
 	// Open a KCP conn on the PacketConn.
 	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
 	if err != nil {
-		return fmt.Errorf("opening KCP conn: %v", err)
+		_ = pconn.Close()
+		_ = ln.Close()
+
+		return nil, nil, nil, fmt.Errorf("opening KCP conn: %v", err)
 	}
-	defer func() {
-		log.Printf("end session %08x", conn.GetConv())
-		conn.Close()
-	}()
 	log.Printf("begin session %08x", conn.GetConv())
 	// Permit coalescing the payloads of consecutive sends.
 	conn.SetStreamMode(true)
@@ -200,7 +209,11 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	// Put a Noise channel on top of the KCP conn.
 	rw, err := noise.NewClient(conn, pubkey)
 	if err != nil {
-		return err
+		_ = pconn.Close()
+		_ = ln.Close()
+		_ = conn.Close()
+
+		return nil, nil, nil, err
 	}
 
 	// Start a smux session on the Noise channel.
@@ -210,9 +223,26 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
 	sess, err := smux.Client(rw, smuxConfig)
 	if err != nil {
-		return fmt.Errorf("opening smux session: %v", err)
+		_ = pconn.Close()
+		_ = ln.Close()
+		_ = conn.Close()
+
+		return nil, nil, nil, fmt.Errorf("opening smux session: %v", err)
 	}
-	defer sess.Close()
+
+	return ln, conn, sess, nil
+}
+
+func acceptLoop(ln *net.TCPListener, pconn net.PacketConn, conn *kcp.UDPSession, sess *smux.Session, shutdown chan struct{}, wg *sync.WaitGroup) {
+	defer func() {
+		_ = ln.Close()
+		_ = pconn.Close()
+
+		log.Printf("end session %08x", conn.GetConv())
+		_ = conn.Close()
+
+		_ = sess.Close()
+	}()
 
 	for {
 		local, err := ln.Accept()
@@ -220,14 +250,39 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				continue
 			}
-			return err
+
+			log.Print(err)
+
+			return
 		}
+
+		wg.Add(1)
+
 		go func() {
-			defer local.Close()
-			err := handle(local.(*net.TCPConn), sess, conn.GetConv())
-			if err != nil {
-				log.Printf("handle: %v", err)
+			defer func() {
+				wg.Done()
+
+				_ = local.Close()
+			}()
+
+			handler := make(chan struct{})
+			go func() {
+				defer close(handler)
+
+				err := handle(local.(*net.TCPConn), sess, conn.GetConv())
+				if err != nil {
+					log.Printf("handle: %v", err)
+				}
+			}()
+
+			select {
+			case <-shutdown:
+				log.Println("Received shutdown signal")
+			case <-handler:
+				log.Println("Handler ended")
 			}
+
+			return
 		}()
 	}
 }
@@ -241,7 +296,7 @@ func main() {
 	var utlsDistribution string
 
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
+		_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage:
   %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE DOMAIN LOCALADDR
 
 Examples:
@@ -255,21 +310,21 @@ Examples:
 		for _, entry := range utlsClientHelloIDMap {
 			labels = append(labels, entry.Label)
 		}
-		fmt.Fprintf(flag.CommandLine.Output(), `
+		_, _ = fmt.Fprintf(flag.CommandLine.Output(), `
 Known TLS fingerprints for -utls are:
 `)
 		i := 0
 		for i < len(labels) {
 			var line strings.Builder
-			fmt.Fprintf(&line, "  %s", labels[i])
+			_, _ = fmt.Fprintf(&line, "  %s", labels[i])
 			w := 2 + len(labels[i])
 			i++
 			for i < len(labels) && w+1+len(labels[i]) <= 72 {
-				fmt.Fprintf(&line, " %s", labels[i])
+				_, _ = fmt.Fprintf(&line, " %s", labels[i])
 				w += 1 + len(labels[i])
 				i++
 			}
-			fmt.Fprintln(flag.CommandLine.Output(), line.String())
+			_, _ = fmt.Fprintln(flag.CommandLine.Output(), line.String())
 		}
 	}
 	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
@@ -290,42 +345,42 @@ Known TLS fingerprints for -utls are:
 	}
 	domain, err := dns.ParseName(flag.Arg(0))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", flag.Arg(0), err)
+		_, _ = fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", flag.Arg(0), err)
 		os.Exit(1)
 	}
 	localAddr, err := net.ResolveTCPAddr("tcp", flag.Arg(1))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	var pubkey []byte
 	if pubkeyFilename != "" && pubkeyString != "" {
-		fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
+		_, _ = fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
 		os.Exit(1)
 	} else if pubkeyFilename != "" {
 		var err error
 		pubkey, err = readKeyFromFile(pubkeyFilename)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
 			os.Exit(1)
 		}
 	} else if pubkeyString != "" {
 		var err error
 		pubkey, err = noise.DecodeKey(pubkeyString)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "pubkey format error: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "pubkey format error: %v\n", err)
 			os.Exit(1)
 		}
 	}
 	if len(pubkey) == 0 {
-		fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
+		_, _ = fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
 		os.Exit(1)
 	}
 
 	utlsClientHelloID, err := sampleUTLSDistribution(utlsDistribution)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "parsing -utls: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "parsing -utls: %v\n", err)
 		os.Exit(1)
 	}
 	if utlsClientHelloID != nil {
@@ -387,24 +442,82 @@ Known TLS fingerprints for -utls are:
 			continue
 		}
 		if pconn != nil {
-			fmt.Fprintf(os.Stderr, "only one of -doh, -dot, and -udp may be given\n")
+			_, _ = fmt.Fprintf(os.Stderr, "only one of -doh, -dot, and -udp may be given\n")
 			os.Exit(1)
 		}
 		var err error
 		remoteAddr, pconn, err = opt.f(opt.s)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 	}
 	if pconn == nil {
-		fmt.Fprintf(os.Stderr, "one of -doh, -dot, or -udp is required\n")
+		_, _ = fmt.Fprintf(os.Stderr, "one of -doh, -dot, or -udp is required\n")
 		os.Exit(1)
 	}
 
-	pconn = NewDNSPacketConn(pconn, remoteAddr, domain)
-	err = run(pubkey, domain, localAddr, remoteAddr, pconn)
+	// Begin goptlib client process.
+	ptInfo, err := pt.ClientSetup(nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	if ptInfo.ProxyURL != nil {
+		_ = pt.ProxyError("proxy is not supported")
+		os.Exit(1)
+	}
+
+	listeners := make([]net.Listener, 0)
+	shutdown := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for _, methodName := range ptInfo.MethodNames {
+		switch methodName {
+		case "dnstt":
+			pconn = NewDNSPacketConn(pconn, remoteAddr, domain)
+			ln, conn, sess, err := listen(pubkey, domain, localAddr, remoteAddr, pconn)
+			if err != nil {
+				_ = pt.CmethodError(methodName, err.Error())
+				break
+			}
+
+			go acceptLoop(ln, pconn, conn, sess, shutdown, &wg)
+
+			pt.Cmethod(methodName, "socks5", ln.Addr())
+			listeners = append(listeners, ln)
+
+		default:
+			_ = pt.CmethodError(methodName, "no such method")
+		}
+	}
+
+	pt.CmethodsDone()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+
+	if os.Getenv("TOR_PT_EXIT_ON_STDIN_CLOSE") == "1" {
+		// This environment variable means we should treat EOF on stdin
+		// just like SIGTERM: https://bugs.torproject.org/15435.
+		go func() {
+			if _, err := io.Copy(ioutil.Discard, os.Stdin); err != nil {
+				log.Printf("calling io.Copy(ioutil.Discard, os.Stdin) returned error: %v", err)
+			}
+			log.Printf("synthesizing SIGTERM because of stdin close")
+			sigChan <- syscall.SIGTERM
+		}()
+	}
+
+	// Wait for a signal.
+	<-sigChan
+	log.Println("stopping dnstt")
+
+	// Signal received, shut down.
+	for _, ln := range listeners {
+		_ = ln.Close()
+	}
+	close(shutdown)
+	wg.Wait()
+	log.Println("dnstt is done.")
 }
