@@ -165,8 +165,8 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func listen(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) (*net.TCPListener, *kcp.UDPSession, *smux.Session, error) {
-	ln, err := net.ListenTCP("tcp", localAddr)
+func listen(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) (*pt.SocksListener, *kcp.UDPSession, *smux.Session, error) {
+	ln, err := pt.ListenSocks("tcp", localAddr.String())
 	if err != nil {
 		_ = pconn.Close()
 
@@ -233,7 +233,7 @@ func listen(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr n
 	return ln, conn, sess, nil
 }
 
-func acceptLoop(ln *net.TCPListener, pconn net.PacketConn, conn *kcp.UDPSession, sess *smux.Session, shutdown chan struct{}, wg *sync.WaitGroup) {
+func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, conn *kcp.UDPSession, sess *smux.Session, shutdown chan struct{}, wg *sync.WaitGroup) {
 	defer func() {
 		_ = ln.Close()
 		_ = pconn.Close()
@@ -245,7 +245,7 @@ func acceptLoop(ln *net.TCPListener, pconn net.PacketConn, conn *kcp.UDPSession,
 	}()
 
 	for {
-		local, err := ln.Accept()
+		local, err := ln.AcceptSocks()
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				continue
@@ -253,6 +253,12 @@ func acceptLoop(ln *net.TCPListener, pconn net.PacketConn, conn *kcp.UDPSession,
 
 			log.Print(err)
 
+			return
+		}
+
+		err = local.Grant(&net.TCPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			log.Printf("conn.Grant error: %s", err)
 			return
 		}
 
@@ -269,7 +275,7 @@ func acceptLoop(ln *net.TCPListener, pconn net.PacketConn, conn *kcp.UDPSession,
 			go func() {
 				defer close(handler)
 
-				err := handle(local.(*net.TCPConn), sess, conn.GetConv())
+				err := handle(local.Conn.(*net.TCPConn), sess, conn.GetConv())
 				if err != nil {
 					log.Printf("handle: %v", err)
 				}
@@ -484,7 +490,7 @@ Known TLS fingerprints for -utls are:
 
 			go acceptLoop(ln, pconn, conn, sess, shutdown, &wg)
 
-			pt.Cmethod(methodName, "socks5", ln.Addr())
+			pt.Cmethod(methodName, ln.Version(), ln.Addr())
 			listeners = append(listeners, ln)
 
 		default:
