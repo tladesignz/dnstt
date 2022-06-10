@@ -38,9 +38,9 @@ var UtlsClientHelloIDMap = []struct {
 	{"iOS_12_1", &utls.HelloIOS_12_1},
 }
 
-// UtlsLookup returns a *utls.ClientHelloID from utlsClientHelloIDMap by a
+// utlsLookup returns a *utls.ClientHelloID from utlsClientHelloIDMap by a
 // case-insensitive label match, or nil if there is no match.
-func UtlsLookup(label string) *utls.ClientHelloID {
+func utlsLookup(label string) *utls.ClientHelloID {
 	for _, entry := range UtlsClientHelloIDMap {
 		if strings.ToLower(label) == strings.ToLower(entry.Label) {
 			return entry.ID
@@ -49,10 +49,10 @@ func UtlsLookup(label string) *utls.ClientHelloID {
 	return nil
 }
 
-// UtlsDialContext connects to the given network address and initiates a TLS
+// utlsDialContext connects to the given network address and initiates a TLS
 // handshake with the provided ClientHelloID, and returns the resulting TLS
 // connection.
-func UtlsDialContext(ctx context.Context, network, addr string, config *utls.Config, id *utls.ClientHelloID) (*utls.UConn, error) {
+func utlsDialContext(ctx context.Context, network, addr string, config *utls.Config, id *utls.ClientHelloID) (*utls.UConn, error) {
 	// Set the SNI from addr, if not already set.
 	if config == nil {
 		config = &utls.Config{}
@@ -186,7 +186,7 @@ func makeRoundTripper(req *http.Request, config *utls.Config, id *utls.ClientHel
 		return nil, err
 	}
 
-	bootstrapConn, err := UtlsDialContext(req.Context(), "tcp", addr, config, id)
+	bootstrapConn, err := utlsDialContext(req.Context(), "tcp", addr, config, id)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func makeRoundTripper(req *http.Request, config *utls.Config, id *utls.ClientHel
 		}
 
 		// Later dials make a new connection.
-		uconn, err := UtlsDialContext(ctx, "tcp", addr, config, id)
+		uconn, err := utlsDialContext(ctx, "tcp", addr, config, id)
 		if err != nil {
 			return nil, err
 		}

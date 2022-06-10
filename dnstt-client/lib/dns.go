@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// NumPadding How many bytes of random padding to insert into queries.
-	NumPadding = 3
+	// numPadding How many bytes of random padding to insert into queries.
+	numPadding = 3
 	// In an otherwise empty polling query, insert even more random padding,
 	// to reduce the chance of a cache hit. Cannot be greater than 31,
 	// because the prefix codes indicating padding start at 224.
@@ -39,8 +39,8 @@ const (
 	pollLimit = 16
 )
 
-// Base32Encoding is a base32 encoding without padding.
-var Base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+// base32Encoding is a base32 encoding without padding.
+var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
@@ -229,9 +229,9 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 	}
 }
 
-// Chunks breaks p into non-empty subslices of at most n bytes, greedily so that
+// chunks breaks p into non-empty subslices of at most n bytes, greedily so that
 // only final subslice has length < n.
-func Chunks(p []byte, n int) [][]byte {
+func chunks(p []byte, n int) [][]byte {
 	var result [][]byte
 	for len(p) > 0 {
 		sz := len(p)
@@ -275,7 +275,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		var buf bytes.Buffer
 		// ClientID
 		buf.Write(c.clientID[:])
-		n := NumPadding
+		n := numPadding
 		if len(p) == 0 {
 			n = numPaddingForPoll
 		}
@@ -290,10 +290,10 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		decoded = buf.Bytes()
 	}
 
-	encoded := make([]byte, Base32Encoding.EncodedLen(len(decoded)))
-	Base32Encoding.Encode(encoded, decoded)
+	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
+	base32Encoding.Encode(encoded, decoded)
 	encoded = bytes.ToLower(encoded)
-	labels := Chunks(encoded, 63)
+	labels := chunks(encoded, 63)
 	labels = append(labels, c.domain...)
 	name, err := dns.NewName(labels)
 	if err != nil {
