@@ -29,6 +29,8 @@ import (
 // smux streams will be closed after this much time without receiving data.
 const idleTimeout = 2 * time.Minute
 
+var sigChan = make(chan os.Signal, 1)
+
 // dnsNameCapacity returns the number of bytes remaining for encoded data after
 // including domain in a DNS name.
 func dnsNameCapacity(domain dns.Name) int {
@@ -402,7 +404,6 @@ func Start(dohURL, dotAddr, udpAddr, listenAddr string, utlsClientHelloID *utls.
 
 	pt.CmethodsDone()
 
-	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM)
 
 	if os.Getenv("TOR_PT_EXIT_ON_STDIN_CLOSE") == "1" {
@@ -428,4 +429,10 @@ func Start(dohURL, dotAddr, udpAddr, listenAddr string, utlsClientHelloID *utls.
 	close(shutdown)
 	wg.Wait()
 	log.Println("dnstt is done.")
+}
+
+//goland:noinspection GoUnusedExportedFunction
+func Stop() {
+	log.Println("synthesizing SIGTERM because of explicit Stop call")
+	sigChan <- syscall.SIGTERM
 }
