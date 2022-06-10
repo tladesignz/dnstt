@@ -109,9 +109,9 @@ func generateKeypair(privkeyFilename, pubkeyFilename string) (err error) {
 	var toDelete []string
 	defer func() {
 		for _, filename := range toDelete {
-			fmt.Fprintf(os.Stderr, "deleting partially written file %s\n", filename)
+			log.Printf("deleting partially written file %s\n", filename)
 			if closeErr := os.Remove(filename); closeErr != nil {
-				fmt.Fprintf(os.Stderr, "cannot remove %s: %v\n", filename, closeErr)
+				log.Printf("cannot remove %s: %v\n", filename, closeErr)
 				if err == nil {
 					err = closeErr
 				}
@@ -180,7 +180,9 @@ func readKeyFromFile(filename string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 	return noise.ReadKey(f)
 }
 
@@ -194,7 +196,9 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 	if err != nil {
 		return fmt.Errorf("stream %08x:%d connect upstream: %v", conv, stream.ID(), err)
 	}
-	defer upstreamConn.Close()
+	defer func() {
+		_ = upstreamConn.Close()
+	}()
 	upstreamTCPConn := upstreamConn.(*net.TCPConn)
 
 	var wg sync.WaitGroup
@@ -209,8 +213,8 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Printf("stream %08x:%d copy stream←upstream: %v", conv, stream.ID(), err)
 		}
-		upstreamTCPConn.CloseRead()
-		stream.Close()
+		_ = upstreamTCPConn.CloseRead()
+		_ = stream.Close()
 	}()
 	go func() {
 		defer wg.Done()
@@ -222,7 +226,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Printf("stream %08x:%d copy upstream←stream: %v", conv, stream.ID(), err)
 		}
-		upstreamTCPConn.CloseWrite()
+		_ = upstreamTCPConn.CloseWrite()
 	}()
 	wg.Wait()
 
@@ -247,11 +251,14 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() {
+		_ = sess.Close()
+	}()
 
 	for {
 		stream, err := sess.AcceptStream()
 		if err != nil {
+			//goland:noinspection GoDeprecation
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				continue
 			}
@@ -261,7 +268,7 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 		go func() {
 			defer func() {
 				log.Printf("end stream %08x:%d", conn.GetConv(), stream.ID())
-				stream.Close()
+				_ = stream.Close()
 			}()
 			err := handleStream(stream, upstream, conn.GetConv())
 			if err != nil {
@@ -277,6 +284,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
+			//goland:noinspection GoDeprecation
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				continue
 			}
@@ -300,7 +308,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 		go func() {
 			defer func() {
 				log.Printf("end session %08x", conn.GetConv())
-				conn.Close()
+				_ = conn.Close()
 			}()
 			err := acceptStreams(conn, privkey, upstream)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
@@ -499,6 +507,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		var buf [4096]byte
 		n, addr, err := dnsConn.ReadFrom(buf[:])
 		if err != nil {
+			//goland:noinspection GoDeprecation
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				log.Printf("ReadFrom temporary error: %v", err)
 				continue
@@ -639,7 +648,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 				if int(uint16(len(p))) != len(p) {
 					panic(len(p))
 				}
-				binary.Write(&payload, binary.BigEndian, uint16(len(p)))
+				_ = binary.Write(&payload, binary.BigEndian, uint16(len(p)))
 				payload.Write(p)
 			}
 			timer.Stop()
@@ -663,6 +672,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 		// Now we actually send the message as a UDP packet.
 		_, err = dnsConn.WriteTo(buf, rec.Addr)
 		if err != nil {
+			//goland:noinspection GoDeprecation
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				log.Printf("WriteTo temporary error: %v", err)
 				continue
@@ -728,7 +738,7 @@ func computeMaxEncodedPayload(limit int) int {
 			},
 		},
 	}
-	resp, _ := responseFor(query, dns.Name([][]byte{}))
+	resp, _ := responseFor(query, [][]byte{})
 	// As in sendLoop.
 	resp.Answer = []dns.RR{
 		{
@@ -762,7 +772,9 @@ func computeMaxEncodedPayload(limit int) int {
 }
 
 func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn) error {
-	defer dnsConn.Close()
+	defer func() {
+		_ = dnsConn.Close()
+	}()
 
 	log.Printf("pubkey %x", noise.PubkeyFromPrivkey(privkey))
 
@@ -790,7 +802,9 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	if err != nil {
 		return fmt.Errorf("opening KCP listener: %v", err)
 	}
-	defer ln.Close()
+	defer func() {
+		_ = ln.Close()
+	}()
 	go func() {
 		err := acceptSessions(ln, privkey, mtu, upstream)
 		if err != nil {
@@ -822,7 +836,7 @@ func main() {
 	var udpAddr string
 
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
+		_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage:
   %[1]s -gen-key -privkey-file PRIVKEYFILE -pubkey-file PUBKEYFILE
   %[1]s -udp ADDR -privkey-file PRIVKEYFILE DOMAIN UPSTREAMADDR
 
@@ -850,7 +864,7 @@ Example:
 			os.Exit(1)
 		}
 		if err := generateKeypair(privkeyFilename, pubkeyFilename); err != nil {
-			fmt.Fprintf(os.Stderr, "cannot generate keypair: %v\n", err)
+			log.Printf("cannot generate keypair: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
@@ -861,7 +875,7 @@ Example:
 		}
 		domain, err := dns.ParseName(flag.Arg(0))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", flag.Arg(0), err)
+			log.Printf("invalid domain %+q: %v\n", flag.Arg(0), err)
 			os.Exit(1)
 		}
 		upstream := flag.Arg(1)
@@ -875,7 +889,7 @@ Example:
 			if err != nil {
 				// host:port format is required in all cases, so
 				// this is a fatal error.
-				fmt.Fprintf(os.Stderr, "cannot parse upstream address %+q: %v\n", upstream, err)
+				log.Printf("cannot parse upstream address %+q: %v\n", upstream, err)
 				os.Exit(1)
 			}
 			upstreamIPAddr, err := net.ResolveIPAddr("ip", upstreamHost)
@@ -889,42 +903,42 @@ Example:
 				// for the host portion, which resolves to a nil
 				// IP. This is a fatal error as we will not be
 				// able to dial this address.
-				fmt.Fprintf(os.Stderr, "cannot parse upstream address %+q: missing host in address\n", upstream)
+				log.Printf("cannot parse upstream address %+q: missing host in address\n", upstream)
 				os.Exit(1)
 			}
 		}
 
 		if udpAddr == "" {
-			fmt.Fprintf(os.Stderr, "the -udp option is required\n")
+			log.Printf("the -udp option is required\n")
 			os.Exit(1)
 		}
 		dnsConn, err := net.ListenPacket("udp", udpAddr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "opening UDP listener: %v\n", err)
+			log.Printf("opening UDP listener: %v\n", err)
 			os.Exit(1)
 		}
 
 		if pubkeyFilename != "" {
-			fmt.Fprintf(os.Stderr, "-pubkey-file may only be used with -gen-key\n")
+			log.Printf("-pubkey-file may only be used with -gen-key\n")
 			os.Exit(1)
 		}
 
 		var privkey []byte
 		if privkeyFilename != "" && privkeyString != "" {
-			fmt.Fprintf(os.Stderr, "only one of -privkey and -privkey-file may be used\n")
+			log.Printf("only one of -privkey and -privkey-file may be used\n")
 			os.Exit(1)
 		} else if privkeyFilename != "" {
 			var err error
 			privkey, err = readKeyFromFile(privkeyFilename)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "cannot read privkey from file: %v\n", err)
+				log.Printf("cannot read privkey from file: %v\n", err)
 				os.Exit(1)
 			}
 		} else if privkeyString != "" {
 			var err error
 			privkey, err = noise.DecodeKey(privkeyString)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "privkey format error: %v\n", err)
+				log.Printf("privkey format error: %v\n", err)
 				os.Exit(1)
 			}
 		}
@@ -934,7 +948,7 @@ Example:
 			var err error
 			privkey, err = noise.GeneratePrivkey()
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				log.Println(err)
 				os.Exit(1)
 			}
 		}
