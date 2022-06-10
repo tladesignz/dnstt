@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 import (
 	"bufio"
@@ -54,7 +54,9 @@ func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, netw
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0),
 	}
 	go func() {
-		defer c.Close()
+		defer func() {
+			_ = c.Close()
+		}()
 		for {
 			var wg sync.WaitGroup
 			wg.Add(2)
@@ -73,7 +75,7 @@ func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, netw
 				wg.Done()
 			}()
 			wg.Wait()
-			conn.Close()
+			_ = conn.Close()
 
 			// Whenever the TLS connection dies, redial a new one.
 			conn, err = dial()

@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 import (
 	"testing"
@@ -20,7 +20,7 @@ func TestParseWeightedList(t *testing.T) {
 		{"\\,", []uint32{1}, []string{","}},
 		{"3\\*apple\\,car\\rot,100*orange", []uint32{1, 100}, []string{"3*apple,carrot", "orange"}},
 	} {
-		weights, labels, err := parseWeightedList(test.input)
+		weights, labels, err := ParseWeightedList(test.input)
 		if err != nil {
 			t.Errorf("%+q resulted in error: %v", test.input, err)
 			continue
@@ -55,7 +55,7 @@ func TestParseWeightedList(t *testing.T) {
 		"-5*apple",
 		"5.5*apple",
 	} {
-		_, _, err := parseWeightedList(input)
+		_, _, err := ParseWeightedList(input)
 		if err == nil {
 			t.Errorf("%+q resulted in no error", input)
 			continue
@@ -77,7 +77,7 @@ func TestSampleWeighted(t *testing.T) {
 					t.Errorf("%v: expected panic", weights)
 				}
 			}()
-			sampleWeighted(weights)
+			SampleWeighted(weights)
 		}()
 	}
 
@@ -92,7 +92,7 @@ func TestSampleWeighted(t *testing.T) {
 		{[]uint32{0, 0, 0xffffffff, 0, 1}, 2},
 	} {
 		for i := 0; i < 100; i++ {
-			index := sampleWeighted(test.weights)
+			index := SampleWeighted(test.weights)
 			if index != test.index {
 				t.Errorf("%v: expected %d, got %d", test.weights, test.index, index)
 			}

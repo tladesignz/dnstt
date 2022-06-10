@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 import (
 	"bytes"
@@ -88,7 +88,9 @@ func (c *HTTPPacketConn) send(p []byte) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

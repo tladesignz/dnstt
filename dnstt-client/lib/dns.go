@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// How many bytes of random padding to insert into queries.
-	numPadding = 3
+	// NumPadding How many bytes of random padding to insert into queries.
+	NumPadding = 3
 	// In an otherwise empty polling query, insert even more random padding,
 	// to reduce the chance of a cache hit. Cannot be greater than 31,
 	// because the prefix codes indicating padding start at 224.
@@ -39,8 +39,8 @@ const (
 	pollLimit = 16
 )
 
-// base32Encoding is a base32 encoding without padding.
-var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+// Base32Encoding is a base32 encoding without padding.
+var Base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
@@ -187,6 +187,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		var buf [4096]byte
 		n, addr, err := transport.ReadFrom(buf[:])
 		if err != nil {
+			//goland:noinspection GoDeprecation
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				log.Printf("ReadFrom temporary error: %v", err)
 				continue
@@ -205,13 +206,13 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 
 		// Pull out the packets contained in the payload.
 		r := bytes.NewReader(payload)
-		any := false
+		anyPacket := false
 		for {
 			p, err := nextPacket(r)
 			if err != nil {
 				break
 			}
-			any = true
+			anyPacket = true
 			c.QueuePacketConn.QueueIncoming(p, addr)
 		}
 
@@ -219,7 +220,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		// to poll immediately. ACKs on received data will effectively
 		// serve as another stream of polls whose rate is proportional
 		// to the rate of incoming packets.
-		if any {
+		if anyPacket {
 			select {
 			case c.pollChan <- struct{}{}:
 			default:
@@ -228,9 +229,9 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 	}
 }
 
-// chunks breaks p into non-empty subslices of at most n bytes, greedily so that
+// Chunks breaks p into non-empty subslices of at most n bytes, greedily so that
 // only final subslice has length < n.
-func chunks(p []byte, n int) [][]byte {
+func Chunks(p []byte, n int) [][]byte {
 	var result [][]byte
 	for len(p) > 0 {
 		sz := len(p)
@@ -274,13 +275,13 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		var buf bytes.Buffer
 		// ClientID
 		buf.Write(c.clientID[:])
-		n := numPadding
+		n := NumPadding
 		if len(p) == 0 {
 			n = numPaddingForPoll
 		}
 		// Padding / cache inhibition
 		buf.WriteByte(byte(224 + n))
-		io.CopyN(&buf, rand.Reader, int64(n))
+		_, _ = io.CopyN(&buf, rand.Reader, int64(n))
 		// Packet contents
 		if len(p) > 0 {
 			buf.WriteByte(byte(len(p)))
@@ -289,10 +290,10 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		decoded = buf.Bytes()
 	}
 
-	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
-	base32Encoding.Encode(encoded, decoded)
+	encoded := make([]byte, Base32Encoding.EncodedLen(len(decoded)))
+	Base32Encoding.Encode(encoded, decoded)
 	encoded = bytes.ToLower(encoded)
-	labels := chunks(encoded, 63)
+	labels := Chunks(encoded, 63)
 	labels = append(labels, c.domain...)
 	name, err := dns.NewName(labels)
 	if err != nil {
@@ -300,7 +301,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 	}
 
 	var id uint16
-	binary.Read(rand.Reader, binary.BigEndian, &id)
+	_ = binary.Read(rand.Reader, binary.BigEndian, &id)
 	query := &dns.Message{
 		ID:    id,
 		Flags: 0x0100, // QR = 0, RD = 1

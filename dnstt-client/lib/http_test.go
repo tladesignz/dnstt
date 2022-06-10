@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 import (
 	"testing"

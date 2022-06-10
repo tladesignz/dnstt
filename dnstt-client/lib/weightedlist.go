@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 // Random selection from weighted distributions, and strings for specifying such
 // distributions.
@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// parseWeightedList parses a list of text labels with optional numeric weights,
+// ParseWeightedList parses a list of text labels with optional numeric weights,
 // and returns parallel slices of weights and labels. If a weight is omitted for
 // a label, the weight is 1.
 //
@@ -22,7 +22,7 @@ import (
 //
 //   list ::= entry ("," entry)*
 //   entry ::= (weight "*")? label
-func parseWeightedList(s string) ([]uint32, []string, error) {
+func ParseWeightedList(s string) ([]uint32, []string, error) {
 	const (
 		kindEOF = iota
 		kindComma
@@ -176,10 +176,10 @@ func (s cryptoSource) Int63() int64 {
 	return n
 }
 
-// sampleWeighted returns the index of a randomly selected element of the
+// SampleWeighted returns the index of a randomly selected element of the
 // weights slice, weighted by the values stored in the slice. Panics if
 // the sum of the weights is zero or does not fit in an int64.
-func sampleWeighted(weights []uint32) int {
+func SampleWeighted(weights []uint32) int {
 	var sum int64 = 0
 	for _, w := range weights {
 		sum += int64(w)

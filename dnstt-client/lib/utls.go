@@ -1,4 +1,4 @@
-package main
+package dnstt_client
 
 // Support code for TLS camouflage using uTLS.
 
@@ -16,9 +16,9 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// utlsClientHelloIDMap is a correspondence between human-readable labels and
+// UtlsClientHelloIDMap is a correspondence between human-readable labels and
 // supported utls.ClientHelloIDs.
-var utlsClientHelloIDMap = []struct {
+var UtlsClientHelloIDMap = []struct {
 	Label string
 	ID    *utls.ClientHelloID
 }{
@@ -38,10 +38,10 @@ var utlsClientHelloIDMap = []struct {
 	{"iOS_12_1", &utls.HelloIOS_12_1},
 }
 
-// utlsLookup returns a *utls.ClientHelloID from utlsClientHelloIDMap by a
+// UtlsLookup returns a *utls.ClientHelloID from utlsClientHelloIDMap by a
 // case-insensitive label match, or nil if there is no match.
-func utlsLookup(label string) *utls.ClientHelloID {
-	for _, entry := range utlsClientHelloIDMap {
+func UtlsLookup(label string) *utls.ClientHelloID {
+	for _, entry := range UtlsClientHelloIDMap {
 		if strings.ToLower(label) == strings.ToLower(entry.Label) {
 			return entry.ID
 		}
@@ -49,10 +49,10 @@ func utlsLookup(label string) *utls.ClientHelloID {
 	return nil
 }
 
-// utlsDialContext connects to the given network address and initiates a TLS
+// UtlsDialContext connects to the given network address and initiates a TLS
 // handshake with the provided ClientHelloID, and returns the resulting TLS
 // connection.
-func utlsDialContext(ctx context.Context, network, addr string, config *utls.Config, id *utls.ClientHelloID) (*utls.UConn, error) {
+func UtlsDialContext(ctx context.Context, network, addr string, config *utls.Config, id *utls.ClientHelloID) (*utls.UConn, error) {
 	// Set the SNI from addr, if not already set.
 	if config == nil {
 		config = &utls.Config{}
@@ -76,7 +76,7 @@ func utlsDialContext(ctx context.Context, network, addr string, config *utls.Con
 	if net.ParseIP(config.ServerName) != nil {
 		err := uconn.RemoveSNIExtension()
 		if err != nil {
-			uconn.Close()
+			_ = uconn.Close()
 			return nil, err
 		}
 	}
@@ -88,7 +88,7 @@ func utlsDialContext(ctx context.Context, network, addr string, config *utls.Con
 	// https://github.com/refraction-networking/utls/issues/75
 	err = uconn.Handshake()
 	if err != nil {
-		uconn.Close()
+		_ = uconn.Close()
 		return nil, err
 	}
 	return uconn, nil
@@ -186,7 +186,7 @@ func makeRoundTripper(req *http.Request, config *utls.Config, id *utls.ClientHel
 		return nil, err
 	}
 
-	bootstrapConn, err := utlsDialContext(req.Context(), "tcp", addr, config, id)
+	bootstrapConn, err := UtlsDialContext(req.Context(), "tcp", addr, config, id)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func makeRoundTripper(req *http.Request, config *utls.Config, id *utls.ClientHel
 		}
 
 		// Later dials make a new connection.
-		uconn, err := utlsDialContext(ctx, "tcp", addr, config, id)
+		uconn, err := UtlsDialContext(ctx, "tcp", addr, config, id)
 		if err != nil {
 			return nil, err
 		}
