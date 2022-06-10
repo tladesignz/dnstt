@@ -2,11 +2,11 @@
 //
 // Usage:
 //     dnstt-server -gen-key [-privkey-file PRIVKEYFILE] [-pubkey-file PUBKEYFILE]
-//     dnstt-server -udp ADDR [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] DOMAIN UPSTREAMADDR
+//     TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-ADDR TOR_PT_ORPORT=UPSTREAMADDR dnstt-server [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] DOMAIN
 //
 // Example:
 //     dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
-//     dnstt-server -udp :53 -privkey-file server.key t.example.com 127.0.0.1:8000
+//     TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-127.0.0.1:53 TOR_PT_ORPORT=127.0.0.1:8000 dnstt-server -privkey-file server.key t.example.com
 //
 // To generate a persistent server private key, first run with the -gen-key
 // option. By default the generated private and public keys are printed to
@@ -41,12 +41,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	pt "git.torproject.org/pluggable-transports/goptlib.git"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/xtaci/kcp-go/v5"
@@ -57,6 +60,8 @@ import (
 )
 
 const (
+	ptMethodName = "dnstt"
+
 	// smux streams will be closed after this much time without receiving data.
 	idleTimeout = 2 * time.Minute
 
@@ -833,16 +838,16 @@ func main() {
 	var privkeyFilename string
 	var privkeyString string
 	var pubkeyFilename string
-	var udpAddr string
 
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage:
   %[1]s -gen-key -privkey-file PRIVKEYFILE -pubkey-file PUBKEYFILE
-  %[1]s -udp ADDR -privkey-file PRIVKEYFILE DOMAIN UPSTREAMADDR
+  TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-ADDR TOR_PT_ORPORT=UPSTREAMADDR %[1]s -privkey-file server.key t.example.com
+
 
 Example:
   %[1]s -gen-key -privkey-file server.key -pubkey-file server.pub
-  %[1]s -udp :53 -privkey-file server.key t.example.com 127.0.0.1:8000
+  TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-192.168.0.20:53 TOR_PT_ORPORT=127.0.0.1:8000 %[1]s -privkey-file server.key t.example.com
 
 `, os.Args[0])
 		flag.PrintDefaults()
@@ -852,14 +857,13 @@ Example:
 	flag.StringVar(&privkeyString, "privkey", "", fmt.Sprintf("server private key (%d hex digits)", noise.KeyLen*2))
 	flag.StringVar(&privkeyFilename, "privkey-file", "", "read server private key from file (with -gen-key, write to file)")
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "with -gen-key, write server public key to file")
-	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
 	if genKey {
 		// -gen-key mode.
-		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" {
+		if flag.NArg() != 0 || privkeyString != "" {
 			flag.Usage()
 			os.Exit(1)
 		}
@@ -869,7 +873,7 @@ Example:
 		}
 	} else {
 		// Ordinary server mode.
-		if flag.NArg() != 2 {
+		if flag.NArg() != 1 {
 			flag.Usage()
 			os.Exit(1)
 		}
@@ -878,7 +882,13 @@ Example:
 			log.Printf("invalid domain %+q: %v\n", flag.Arg(0), err)
 			os.Exit(1)
 		}
-		upstream := flag.Arg(1)
+
+		ptInfo, err := pt.ServerSetup(nil)
+		if err != nil {
+			log.Fatalf("error in setup: %s", err)
+		}
+
+		upstream := ptInfo.OrAddr.String()
 		// We keep upstream as a string in order to eventually pass it
 		// to net.Dial in handleStream. But for the sake of displaying
 		// an error or warning at startup, rather than only when the
@@ -906,16 +916,6 @@ Example:
 				log.Printf("cannot parse upstream address %+q: missing host in address\n", upstream)
 				os.Exit(1)
 			}
-		}
-
-		if udpAddr == "" {
-			log.Printf("the -udp option is required\n")
-			os.Exit(1)
-		}
-		dnsConn, err := net.ListenPacket("udp", udpAddr)
-		if err != nil {
-			log.Printf("opening UDP listener: %v\n", err)
-			os.Exit(1)
 		}
 
 		if pubkeyFilename != "" {
@@ -953,9 +953,71 @@ Example:
 			}
 		}
 
-		err = run(privkey, domain, upstream, dnsConn)
-		if err != nil {
-			log.Fatal(err)
+		connections := make([]net.PacketConn, 0)
+		for _, bindaddr := range ptInfo.Bindaddrs {
+			if bindaddr.MethodName != ptMethodName {
+				_ = pt.SmethodError(bindaddr.MethodName, "no such method")
+				continue
+			}
+
+			// We're not capable of listening on port 0 (i.e., an ephemeral port
+			// unknown in advance).
+			if bindaddr.Addr.Port == 0 {
+				err := fmt.Errorf(
+					"cannot listen on port %d; configure a port with TOR_PT_SERVER_BINDADDR",
+					bindaddr.Addr.Port)
+				log.Printf("error opening listener: %s", err)
+				_ = pt.SmethodError(bindaddr.MethodName, err.Error())
+				continue
+			}
+
+			udpAddr := bindaddr.Addr.String()
+			dnsConn, err := net.ListenPacket("udp", udpAddr)
+			if err != nil {
+				log.Printf("opening UDP listener: %v\n", err)
+				_ = pt.SmethodError(bindaddr.MethodName, err.Error())
+				continue
+			}
+
+			defer func() {
+				_ = dnsConn.Close()
+			}()
+
+			go func() {
+				err := run(privkey, domain, upstream, dnsConn)
+				if err != nil {
+					log.Print(err)
+				}
+			}()
+
+			pt.SmethodArgs(bindaddr.MethodName, bindaddr.Addr, pt.Args{})
+			connections = append(connections, dnsConn)
+		}
+
+		pt.SmethodsDone()
+
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGTERM)
+
+		if os.Getenv("TOR_PT_EXIT_ON_STDIN_CLOSE") == "1" {
+			// This environment variable means we should treat EOF on stdin
+			// just like SIGTERM: https://bugs.torproject.org/15435.
+			go func() {
+				if _, err := io.Copy(ioutil.Discard, os.Stdin); err != nil {
+					log.Printf("error copying os.Stdin to ioutil.Discard: %v", err)
+				}
+				log.Printf("synthesizing SIGTERM because of stdin close")
+				sigChan <- syscall.SIGTERM
+			}()
+		}
+
+		// Wait for a signal.
+		sig := <-sigChan
+
+		// Signal received, shut down.
+		log.Printf("caught signal %q, exiting", sig)
+		for _, conn := range connections {
+			_ = conn.Close()
 		}
 	}
 }
