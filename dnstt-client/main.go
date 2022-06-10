@@ -1,11 +1,11 @@
 // dnstt-client is the client end of a DNS tunnel.
 //
 // Usage:
-//     dnstt-client [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE DOMAIN
+//     dnstt-client [-doh URL|-dot ADDR|-udp ADDR]
 //
 // Examples:
-//     dnstt-client -doh https://resolver.example/dns-query -pubkey-file server.pub t.example.com
-//     dnstt-client -dot resolver.example:853 -pubkey-file server.pub t.example.com
+//     dnstt-client -doh https://resolver.example/dns-query t.example.com
+//     dnstt-client -dot resolver.example:853 t.example.com
 //
 // The program supports DNS over HTTPS (DoH), DNS over TLS (DoT), and UDP DNS.
 // Use one of these options:
@@ -81,20 +81,6 @@ func dnsNameCapacity(domain dns.Name) int {
 	return capacity
 }
 
-// readKeyFromFile reads a key from a named file.
-func readKeyFromFile(filename string) ([]byte, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	defer func() {
-		_ = f.Close()
-	}()
-
-	return noise.ReadKey(f)
-}
-
 // sampleUTLSDistribution parses a weighted uTLS Client Hello ID distribution
 // string of the form "3*Firefox,2*Chrome,1*iOS", matches each label to a
 // utls.ClientHelloID from utlsClientHelloIDMap, and randomly samples one
@@ -163,83 +149,10 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func listen(pubkey []byte, domain dns.Name, remoteAddr net.Addr, pconn net.PacketConn) (*pt.SocksListener, *kcp.UDPSession, *smux.Session, error) {
-	ln, err := pt.ListenSocks("tcp", "127.0.0.1:0")
-	if err != nil {
-		_ = pconn.Close()
-
-		return nil, nil, nil, fmt.Errorf("opening local listener: %v", err)
-	}
-
-	mtu := dnsNameCapacity(domain) - 8 - 1 - dc.NumPadding - 1 // clientid + padding length prefix + padding + data length prefix
-	if mtu < 80 {
-		_ = pconn.Close()
-		_ = ln.Close()
-
-		return nil, nil, nil, fmt.Errorf("domain %s leaves only %d bytes for payload", domain, mtu)
-	}
-	log.Printf("effective MTU %d", mtu)
-
-	// Open a KCP conn on the PacketConn.
-	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
-	if err != nil {
-		_ = pconn.Close()
-		_ = ln.Close()
-
-		return nil, nil, nil, fmt.Errorf("opening KCP conn: %v", err)
-	}
-	log.Printf("begin session %08x", conn.GetConv())
-	// Permit coalescing the payloads of consecutive sends.
-	conn.SetStreamMode(true)
-	// Disable the dynamic congestion window (limit only by the maximum of
-	// local and remote static windows).
-	conn.SetNoDelay(
-		0, // default nodelay
-		0, // default interval
-		0, // default resend
-		1, // nc=1 => congestion window off
-	)
-	conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
-	if rc := conn.SetMtu(mtu); !rc {
-		panic(rc)
-	}
-
-	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewClient(conn, pubkey)
-	if err != nil {
-		_ = pconn.Close()
-		_ = ln.Close()
-		_ = conn.Close()
-
-		return nil, nil, nil, err
-	}
-
-	// Start a smux session on the Noise channel.
-	smuxConfig := smux.DefaultConfig()
-	smuxConfig.Version = 2
-	smuxConfig.KeepAliveTimeout = idleTimeout
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
-	sess, err := smux.Client(rw, smuxConfig)
-	if err != nil {
-		_ = pconn.Close()
-		_ = ln.Close()
-		_ = conn.Close()
-
-		return nil, nil, nil, fmt.Errorf("opening smux session: %v", err)
-	}
-
-	return ln, conn, sess, nil
-}
-
-func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, conn *kcp.UDPSession, sess *smux.Session, shutdown chan struct{}, wg *sync.WaitGroup) {
+func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, remoteAddr net.Addr, shutdown chan struct{}, wg *sync.WaitGroup) {
 	defer func() {
 		_ = ln.Close()
 		_ = pconn.Close()
-
-		log.Printf("end session %08x", conn.GetConv())
-		_ = conn.Close()
-
-		_ = sess.Close()
 	}()
 
 	for {
@@ -250,25 +163,129 @@ func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, conn *kcp.UDPSession
 				continue
 			}
 
-			log.Print(err)
-
-			return
+			log.Printf("SOCKS accept error: %s", err)
+			break
 		}
-
-		err = local.Grant(&net.TCPAddr{IP: net.IPv4zero, Port: 0})
-		if err != nil {
-			log.Printf("conn.Grant error: %s", err)
-			return
-		}
+		log.Printf("SOCKS accepted: %v", local.Req)
 
 		wg.Add(1)
-
 		go func() {
 			defer func() {
-				wg.Done()
-
 				_ = local.Close()
+				wg.Done()
 			}()
+
+			var pubkey []byte
+
+			if arg, ok := local.Req.Args.Get("pubkey"); ok {
+				pubkey, err = noise.DecodeKey(arg)
+				if err != nil {
+					log.Printf("pubkey format error: %v", err)
+					_ = local.Reject()
+					return
+				}
+			} else {
+				log.Print("Missing pubkey")
+				_ = local.Reject()
+				return
+			}
+
+			var domain dns.Name
+
+			if arg, ok := local.Req.Args.Get("domain"); ok {
+				domain, err = dns.ParseName(arg)
+				if err != nil {
+					log.Printf("invalid domain %+q: %v\n", arg, err)
+					_ = local.Reject()
+					return
+				}
+			} else {
+				log.Print("Missing domain")
+				_ = local.Reject()
+				return
+			}
+
+			mtu := dnsNameCapacity(domain) - 8 - 1 - dc.NumPadding - 1 // clientid + padding length prefix + padding + data length prefix
+			if mtu < 80 {
+				log.Printf("domain %s leaves only %d bytes for payload", domain, mtu)
+
+				_ = local.Reject()
+
+				return
+			}
+			log.Printf("effective MTU %d", mtu)
+
+			pconn = dc.NewDNSPacketConn(pconn, remoteAddr, domain)
+
+			defer func() {
+				_ = pconn.Close()
+			}()
+
+			// Open a KCP conn on the PacketConn.
+			conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
+			if err != nil {
+				log.Printf("opening KCP conn: %v", err)
+
+				_ = local.Reject()
+
+				return
+			}
+			log.Printf("begin session %08x", conn.GetConv())
+
+			defer func() {
+				log.Printf("end session %08x", conn.GetConv())
+				_ = conn.Close()
+			}()
+
+			// Permit coalescing the payloads of consecutive sends.
+			conn.SetStreamMode(true)
+			// Disable the dynamic congestion window (limit only by the maximum of
+			// local and remote static windows).
+			conn.SetNoDelay(
+				0, // default nodelay
+				0, // default interval
+				0, // default resend
+				1, // nc=1 => congestion window off
+			)
+			conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
+			if rc := conn.SetMtu(mtu); !rc {
+				panic(rc)
+			}
+
+			// Put a Noise channel on top of the KCP conn.
+			rw, err := noise.NewClient(conn, pubkey)
+			if err != nil {
+				log.Printf("Opening noise channel: %v", err)
+
+				_ = local.Reject()
+
+				return
+			}
+
+			// Start a smux session on the Noise channel.
+			smuxConfig := smux.DefaultConfig()
+			smuxConfig.Version = 2
+			smuxConfig.KeepAliveTimeout = idleTimeout
+			smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
+			sess, err := smux.Client(rw, smuxConfig)
+			if err != nil {
+				log.Printf("opening smux session: %v", err)
+
+				_ = local.Reject()
+
+				return
+			}
+
+			defer func() {
+				_ = sess.Close()
+			}()
+
+			err = local.Grant(&net.TCPAddr{IP: net.IPv4zero, Port: 0})
+			if err != nil {
+				log.Printf("conn.Grant error: %s", err)
+
+				return
+			}
 
 			handler := make(chan struct{})
 			go func() {
@@ -295,18 +312,16 @@ func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, conn *kcp.UDPSession
 func main() {
 	var dohURL string
 	var dotAddr string
-	var pubkeyFilename string
-	var pubkeyString string
 	var udpAddr string
 	var utlsDistribution string
 
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE DOMAIN
+  %[1]s [-doh URL|-dot ADDR|-udp ADDR]
 
 Examples:
-  %[1]s -doh https://resolver.example/dns-query -pubkey-file server.pub t.example.com
-  %[1]s -dot resolver.example:853 -pubkey-file server.pub t.example.com
+  %[1]s -doh https://resolver.example/dns-query t.example.com
+  %[1]s -dot resolver.example:853 t.example.com
 
 `, os.Args[0])
 		flag.PrintDefaults()
@@ -334,8 +349,6 @@ Known TLS fingerprints for -utls are:
 	}
 	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
 	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
-	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
-	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&utlsDistribution, "utls",
 		"3*Firefox_65,1*Firefox_63,1*iOS_12_1",
@@ -344,37 +357,8 @@ Known TLS fingerprints for -utls are:
 
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
-	if flag.NArg() != 1 {
+	if flag.NArg() != 0 {
 		flag.Usage()
-		os.Exit(1)
-	}
-	domain, err := dns.ParseName(flag.Arg(0))
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", flag.Arg(0), err)
-		os.Exit(1)
-	}
-
-	var pubkey []byte
-	if pubkeyFilename != "" && pubkeyString != "" {
-		_, _ = fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
-		os.Exit(1)
-	} else if pubkeyFilename != "" {
-		var err error
-		pubkey, err = readKeyFromFile(pubkeyFilename)
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
-			os.Exit(1)
-		}
-	} else if pubkeyString != "" {
-		var err error
-		pubkey, err = noise.DecodeKey(pubkeyString)
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "pubkey format error: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if len(pubkey) == 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
 		os.Exit(1)
 	}
 
@@ -475,14 +459,14 @@ Known TLS fingerprints for -utls are:
 	for _, methodName := range ptInfo.MethodNames {
 		switch methodName {
 		case "dnstt":
-			pconn = dc.NewDNSPacketConn(pconn, remoteAddr, domain)
-			ln, conn, sess, err := listen(pubkey, domain, remoteAddr, pconn)
+			ln, err := pt.ListenSocks("tcp", "127.0.0.1:0")
+
 			if err != nil {
 				_ = pt.CmethodError(methodName, err.Error())
 				break
 			}
 
-			go acceptLoop(ln, pconn, conn, sess, shutdown, &wg)
+			go acceptLoop(ln, pconn, remoteAddr, shutdown, &wg)
 
 			pt.Cmethod(methodName, ln.Version(), ln.Addr())
 			listeners = append(listeners, ln)
