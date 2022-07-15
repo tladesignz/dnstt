@@ -39,18 +39,11 @@ import (
 )
 
 func main() {
-	var dohURL string
-	var dotAddr string
-	var udpAddr string
 	var utlsDistribution string
 
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR]
-
-Examples:
-  %[1]s -doh https://resolver.example/dns-query t.example.com
-  %[1]s -dot resolver.example:853 t.example.com
+  %[1]s [-utls FINGERPRINTS]
 
 `, os.Args[0])
 		flag.PrintDefaults()
@@ -76,9 +69,6 @@ Known TLS fingerprints for -utls are:
 			_, _ = fmt.Fprintln(flag.CommandLine.Output(), line.String())
 		}
 	}
-	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
-	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
-	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&utlsDistribution, "utls",
 		"3*Firefox_65,1*Firefox_63,1*iOS_12_1",
 		"choose TLS fingerprint from weighted distribution")
@@ -95,5 +85,5 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 
-	dc.Start(dohURL, dotAddr, udpAddr, "", utlsClientHelloID)
+	dc.Start("", utlsClientHelloID)
 }

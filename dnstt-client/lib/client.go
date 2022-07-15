@@ -119,10 +119,9 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, remoteAddr net.Addr, shutdown chan struct{}, wg *sync.WaitGroup) {
+func acceptLoop(ln *pt.SocksListener, utlsClientHelloID *utls.ClientHelloID, shutdown chan struct{}, wg *sync.WaitGroup) {
 	defer func() {
 		_ = ln.Close()
-		_ = pconn.Close()
 	}()
 
 	for {
@@ -146,6 +145,57 @@ func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, remoteAddr net.Addr,
 			}()
 
 			var pubkey []byte
+			var remoteAddr net.Addr
+			var pconn net.PacketConn
+			var err error
+
+			if arg, ok := local.Req.Args.Get("doh"); ok {
+				remoteAddr = turbotunnel.DummyAddr{}
+				var rt http.RoundTripper
+				if utlsClientHelloID == nil {
+					transport := http.DefaultTransport.(*http.Transport).Clone()
+					// Disable DefaultTransport's default Proxy =
+					// ProxyFromEnvironment setting, for conformity
+					// with utlsRoundTripper and with DoT mode,
+					// which do not take a proxy from the
+					// environment.
+					transport.Proxy = nil
+					rt = transport
+				} else {
+					rt = NewUTLSRoundTripper(nil, utlsClientHelloID)
+				}
+				pconn, err = NewHTTPPacketConn(rt, arg, 32)
+
+			} else if arg, ok := local.Req.Args.Get("dot"); ok {
+				remoteAddr = turbotunnel.DummyAddr{}
+				var dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)
+				if utlsClientHelloID == nil {
+					dialTLSContext = (&tls.Dialer{}).DialContext
+				} else {
+					dialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return utlsDialContext(ctx, network, addr, nil, utlsClientHelloID)
+					}
+				}
+				pconn, err = NewTLSPacketConn(arg, dialTLSContext)
+
+			} else if arg, ok := local.Req.Args.Get("udp"); ok {
+				remoteAddr, err = net.ResolveUDPAddr("udp", arg)
+				if err == nil {
+					pconn, err = net.ListenUDP("udp", nil)
+				}
+			}
+
+			if err != nil {
+				log.Printf("DNS server error: %v\n", err)
+				_ = local.Reject()
+				return
+			}
+
+			if remoteAddr == nil || pconn == nil {
+				log.Printf("Missing DNS server. Use 'doh', 'dot' or 'udp' argument to provide one!")
+				_ = local.Reject()
+				return
+			}
 
 			if arg, ok := local.Req.Args.Get("pubkey"); ok {
 				pubkey, err = noise.DecodeKey(arg)
@@ -279,7 +329,7 @@ func acceptLoop(ln *pt.SocksListener, pconn net.PacketConn, remoteAddr net.Addr,
 	}
 }
 
-func Start(dohURL, dotAddr, udpAddr, listenAddr string, utlsClientHelloID *utls.ClientHelloID) {
+func Start(listenAddr string, utlsClientHelloID *utls.ClientHelloID) {
 
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:0"
@@ -294,76 +344,6 @@ func Start(dohURL, dotAddr, udpAddr, listenAddr string, utlsClientHelloID *utls.
 
 	if utlsClientHelloID != nil {
 		log.Printf("uTLS fingerprint %s %s", utlsClientHelloID.Client, utlsClientHelloID.Version)
-	}
-
-	// Iterate over the remote resolver address options and select one and
-	// only one.
-	var remoteAddr net.Addr
-	var pconn net.PacketConn
-	for _, opt := range []struct {
-		s string
-		f func(string) (net.Addr, net.PacketConn, error)
-	}{
-		// -doh
-		{dohURL, func(s string) (net.Addr, net.PacketConn, error) {
-			addr := turbotunnel.DummyAddr{}
-			var rt http.RoundTripper
-			if utlsClientHelloID == nil {
-				transport := http.DefaultTransport.(*http.Transport).Clone()
-				// Disable DefaultTransport's default Proxy =
-				// ProxyFromEnvironment setting, for conformity
-				// with utlsRoundTripper and with DoT mode,
-				// which do not take a proxy from the
-				// environment.
-				transport.Proxy = nil
-				rt = transport
-			} else {
-				rt = NewUTLSRoundTripper(nil, utlsClientHelloID)
-			}
-			pconn, err := NewHTTPPacketConn(rt, dohURL, 32)
-			return addr, pconn, err
-		}},
-		// -dot
-		{dotAddr, func(s string) (net.Addr, net.PacketConn, error) {
-			addr := turbotunnel.DummyAddr{}
-			var dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)
-			if utlsClientHelloID == nil {
-				dialTLSContext = (&tls.Dialer{}).DialContext
-			} else {
-				dialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return utlsDialContext(ctx, network, addr, nil, utlsClientHelloID)
-				}
-			}
-			pconn, err := NewTLSPacketConn(dotAddr, dialTLSContext)
-			return addr, pconn, err
-		}},
-		// -udp
-		{udpAddr, func(s string) (net.Addr, net.PacketConn, error) {
-			addr, err := net.ResolveUDPAddr("udp", s)
-			if err != nil {
-				return nil, nil, err
-			}
-			pconn, err := net.ListenUDP("udp", nil)
-			return addr, pconn, err
-		}},
-	} {
-		if opt.s == "" {
-			continue
-		}
-		if pconn != nil {
-			log.Printf("only one of -doh, -dot, and -udp may be given\n")
-			return
-		}
-		var err error
-		remoteAddr, pconn, err = opt.f(opt.s)
-		if err != nil {
-			log.Print(err)
-			return
-		}
-	}
-	if pconn == nil {
-		log.Printf("one of -doh, -dot, or -udp is required\n")
-		return
 	}
 
 	// Begin goptlib client process.
@@ -392,7 +372,7 @@ func Start(dohURL, dotAddr, udpAddr, listenAddr string, utlsClientHelloID *utls.
 				break
 			}
 
-			go acceptLoop(ln, pconn, remoteAddr, shutdown, &wg)
+			go acceptLoop(ln, utlsClientHelloID, shutdown, &wg)
 
 			pt.Cmethod(methodName, ln.Version(), ln.Addr())
 			listeners = append(listeners, ln)
