@@ -1,10 +1,12 @@
 // dnstt-server is the server end of a DNS tunnel.
 //
 // Usage:
+//
 //	dnstt-server -gen-key [-privkey-file PRIVKEYFILE] [-pubkey-file PUBKEYFILE]
 //	TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-ADDR TOR_PT_ORPORT=UPSTREAMADDR dnstt-server [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] DOMAIN
 //
 // Example:
+//
 //	dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
 //	TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-127.0.0.1:53 TOR_PT_ORPORT=127.0.0.1:8000 dnstt-server -privkey-file server.key t.example.com
 //
@@ -43,7 +45,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	pt "git.torproject.org/pluggable-transports/goptlib.git"
+	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
 	"io"
 	"io/ioutil"
 	"log"

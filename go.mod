@@ -3,11 +3,11 @@ module www.bamsoftware.com/git/dnstt.git
 go 1.24.0
 
 require (
-	git.torproject.org/pluggable-transports/goptlib.git v1.3.0
 	github.com/flynn/noise v1.1.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/xtaci/kcp-go/v5 v5.6.61
 	github.com/xtaci/smux v1.5.50
+	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0
 	golang.org/x/crypto v0.47.0
 	golang.org/x/net v0.49.0
 )

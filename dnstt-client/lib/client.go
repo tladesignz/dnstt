@@ -6,7 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	pt "git.torproject.org/pluggable-transports/goptlib.git"
+	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
 	"io"
 	"io/ioutil"
 	"log"
@@ -119,7 +119,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func acceptLoop(ln *pt.SocksListener, utlsClientHelloID *utls.ClientHelloID, shutdown chan struct{}, wg *sync.WaitGroup) {
+func AcceptLoop(ln *pt.SocksListener, utlsClientHelloID *utls.ClientHelloID, shutdown chan struct{}, wg *sync.WaitGroup) {
 	defer func() {
 		_ = ln.Close()
 	}()
@@ -372,7 +372,7 @@ func Start(listenAddr string, utlsClientHelloID *utls.ClientHelloID) {
 				break
 			}
 
-			go acceptLoop(ln, utlsClientHelloID, shutdown, &wg)
+			go AcceptLoop(ln, utlsClientHelloID, shutdown, &wg)
 
 			pt.Cmethod(methodName, ln.Version(), ln.Addr())
 			listeners = append(listeners, ln)
