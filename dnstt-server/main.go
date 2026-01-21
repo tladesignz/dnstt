@@ -1,23 +1,25 @@
 // dnstt-server is the server end of a DNS tunnel.
 //
 // Usage:
-//     dnstt-server -gen-key [-privkey-file PRIVKEYFILE] [-pubkey-file PUBKEYFILE]
-//     TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-ADDR TOR_PT_ORPORT=UPSTREAMADDR dnstt-server [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] DOMAIN
+//	dnstt-server -gen-key [-privkey-file PRIVKEYFILE] [-pubkey-file PUBKEYFILE]
+//	TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-ADDR TOR_PT_ORPORT=UPSTREAMADDR dnstt-server [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] DOMAIN
 //
 // Example:
-//     dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
-//     TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-127.0.0.1:53 TOR_PT_ORPORT=127.0.0.1:8000 dnstt-server -privkey-file server.key t.example.com
+//	dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
+//	TOR_PT_MANAGED_TRANSPORT_VER=1 TOR_PT_SERVER_TRANSPORTS=dnstt TOR_PT_SERVER_BINDADDR=dnstt-127.0.0.1:53 TOR_PT_ORPORT=127.0.0.1:8000 dnstt-server -privkey-file server.key t.example.com
 //
 // To generate a persistent server private key, first run with the -gen-key
 // option. By default the generated private and public keys are printed to
 // standard output. To save them to files instead, use the -privkey-file and
 // -pubkey-file options.
-//     dnstt-server -gen-key
-//     dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
+//
+//	dnstt-server -gen-key
+//	dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
 //
 // You can give the server's private key as a file or as a hex string.
-//     -privkey-file server.key
-//     -privkey 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+//
+//	-privkey-file server.key
+//	-privkey 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 //
 // The -udp option controls the address that will listen for incoming DNS
 // queries.

@@ -1,22 +1,26 @@
 // dnstt-client is the client end of a DNS tunnel.
 //
 // Usage:
-//     dnstt-client [-doh URL|-dot ADDR|-udp ADDR]
+//
+//	dnstt-client [-doh URL|-dot ADDR|-udp ADDR] DOMAIN LOCALADDR
 //
 // Examples:
-//     dnstt-client -doh https://resolver.example/dns-query t.example.com
-//     dnstt-client -dot resolver.example:853 t.example.com
+//
+//	dnstt-client -doh https://resolver.example/dns-query t.example.com 127.0.0.1:7000
+//	dnstt-client -dot resolver.example:853 t.example.com 127.0.0.1:7000
 //
 // The program supports DNS over HTTPS (DoH), DNS over TLS (DoT), and UDP DNS.
 // Use one of these options:
-//     -doh https://resolver.example/dns-query
-//     -dot resolver.example:853
-//     -udp resolver.example:53
+//
+//	-doh https://resolver.example/dns-query
+//	-dot resolver.example:853
+//	-udp resolver.example:53
 //
 // You can give the server's public key as a file or as a hex string. Use
 // "dnstt-server -gen-key" to get the public key.
-//     -pubkey-file server.pub
-//     -pubkey 0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff
+//
+//	-pubkey-file server.pub
+//	-pubkey 0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff
 //
 // DOMAIN is the root of the DNS zone reserved for the tunnel. See README for
 // instructions on setting it up.
@@ -25,9 +29,10 @@
 // uTLS by default. The specific TLS fingerprint is selected randomly from a
 // weighted distribution. You can set your own distribution (or specific single
 // fingerprint) using the -utls option. The special value "none" disables uTLS.
-//     -utls '3*Firefox,2*Chrome,1*iOS'
-//     -utls Firefox
-//     -utls none
+//
+//	-utls '3*Firefox,2*Chrome,1*iOS'
+//	-utls Firefox
+//	-utls none
 package main
 
 import (
@@ -70,7 +75,7 @@ Known TLS fingerprints for -utls are:
 		}
 	}
 	flag.StringVar(&utlsDistribution, "utls",
-		"3*Firefox_65,1*Firefox_63,1*iOS_12_1",
+		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
 		"choose TLS fingerprint from weighted distribution")
 	flag.Parse()
 
