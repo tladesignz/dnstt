@@ -34,7 +34,8 @@ It receives DNS over UDP messages at
 decodes the streams they contain,
 and forwards the streams as TCP connections to
 .Ar UPSTREAMADDR : Ns Ar UPSTREAMPORT .
-.Nm acts as the authoritative name server for
+.Nm
+acts as the authoritative name server for
 .Ar DOMAIN
 and communicates with an instance of
 .Xr dnstt-client 1
@@ -202,9 +203,7 @@ At startup,
 .Nm
 logs the amount of useful payload capacity that can be stored
 in each DNS response, after accounting for the overhead of encoding.
-This number will vary depending on the length of
-.Ar DOMAIN
-and the value of
+This number will vary depending on the value of
 .Ar MTU .
 
 .Dl effective MTU 932
