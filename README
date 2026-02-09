@@ -1,3 +1,18 @@
+# DNSTT soft fork
+
+This is a soft fork of David Fifield's DNSTT project which contains
+patches to support the [Pluggable Transports v1 protocol](https://spec.torproject.org/pt-spec/)
+used in [Tor](https://gitlab.torproject.org/tpo/core/tor). 
+
+It's mainly intended for inclusion in the [IPtProxy](github.com/tladesignz/IPtProxy/) mobile
+Pluggable Transports bundle.
+
+The documentation here is not updated fully to reflect these patches.
+If you want to use the original DNSTT project as intended, please use the original code
+which can be found here: https://www.bamsoftware.com/software/dnstt/
+
+## Original README
+
 Userspace DNS tunnel with support for DoH and DoT
 https://www.bamsoftware.com/software/dnstt/
 David Fifield <david@bamsoftware.com>
