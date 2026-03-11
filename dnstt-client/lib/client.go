@@ -150,6 +150,17 @@ func AcceptLoop(ln *pt.SocksListener, utlsClientHelloID *utls.ClientHelloID, shu
 			var pconn net.PacketConn
 			var err error
 
+			// Threads might be blocked waiting for network I/O.
+			// We close the underlying connection, therefore, so the blocks can
+			// resolve and the groutine can come to an end and unwind.
+			go func() {
+				<-shutdown
+
+				if pconn != nil {
+					_ = pconn.Close()
+				}
+			}()
+
 			if arg, ok := local.Req.Args.Get("doh"); ok {
 				remoteAddr = turbotunnel.DummyAddr{}
 				var rt http.RoundTripper
