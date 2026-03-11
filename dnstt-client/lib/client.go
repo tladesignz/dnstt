@@ -269,7 +269,11 @@ func AcceptLoop(ln *pt.SocksListener, utlsClientHelloID *utls.ClientHelloID, shu
 			)
 			conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
 			if rc := conn.SetMtu(mtu); !rc {
-				panic(rc)
+				log.Printf("Could not set MTU %d: %v", mtu, rc)
+
+				_ = local.Reject()
+
+				return
 			}
 
 			// Put a Noise channel on top of the KCP conn.
