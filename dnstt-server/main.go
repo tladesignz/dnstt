@@ -592,6 +592,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			// overflow the capacity of the DNS response, we stash
 			// to be bundled into a future response.
 			timer := time.NewTimer(maxResponseDelay)
+			timerExpired := false
 			for {
 				var p []byte
 				unstash := ttConn.Unstash(rec.ClientID)
@@ -612,6 +613,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 						case p = <-unstash:
 						case p = <-outgoing:
 						case <-timer.C:
+							timerExpired = true
 						case nextRec = <-ch:
 						}
 					}
@@ -620,7 +622,11 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 				// only. The second and later packets must be
 				// immediately available or they will be omitted
 				// from this bundle.
+				if !timerExpired && !timer.Stop() {
+					<-timer.C
+				}
 				timer.Reset(0)
+				timerExpired = false
 
 				if len(p) == 0 {
 					// timer expired or receive on ch, we
@@ -646,7 +652,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 				binary.Write(&payload, binary.BigEndian, uint16(len(p)))
 				payload.Write(p)
 			}
-			timer.Stop()
+			if !timerExpired && !timer.Stop() {
+				<-timer.C
+			}
 
 			rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
 		}
