@@ -803,7 +803,15 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 		return fmt.Errorf("opening KCP listener: %v", err)
 	}
 	defer ln.Close()
+
+	// We will run acceptSessions, sendLoop, and recvLoop concurrently. The
+	// first one to finish closes the done channel.
+	doneChan := make(chan struct{})
+	var doneOnce sync.Once
+	done := func() { doneOnce.Do(func() { close(doneChan) }) }
+
 	go func() {
+		defer done()
 		err := acceptSessions(ln, privkey, mtu, upstream)
 		if err != nil {
 			log.Printf("acceptSessions: %v", err)
@@ -812,12 +820,6 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 
 	ch := make(chan *record, 100)
 	defer close(ch)
-
-	// We will run sendLoop and recvLoop at the same time. The first one to
-	// finish closes the done channel.
-	doneChan := make(chan struct{})
-	var doneOnce sync.Once
-	done := func() { doneOnce.Do(func() { close(doneChan) }) }
 
 	// We could run multiple copies of sendLoop; that would allow more time
 	// for each response to collect downstream data before being evicted by
@@ -838,8 +840,8 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 		}
 	}()
 
-	// Wait for either sendLoop or recvLoop to return. In normal operation,
-	// we don't expect either to return.
+	// Wait for any of acceptSessions, sendLoop, or recvLoop to return. In
+	// normal operation, we don't expect any of these to return.
 	<-doneChan
 
 	return nil
