@@ -813,17 +813,36 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	ch := make(chan *record, 100)
 	defer close(ch)
 
+	// We will run sendLoop and recvLoop at the same time. The first one to
+	// finish closes the done channel.
+	doneChan := make(chan struct{})
+	var doneOnce sync.Once
+	done := func() { doneOnce.Do(func() { close(doneChan) }) }
+
 	// We could run multiple copies of sendLoop; that would allow more time
 	// for each response to collect downstream data before being evicted by
 	// another response that needs to be sent.
 	go func() {
+		defer done()
 		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
 		if err != nil {
 			log.Printf("sendLoop: %v", err)
 		}
 	}()
 
-	return recvLoop(domain, dnsConn, ttConn, ch)
+	go func() {
+		defer done()
+		err := recvLoop(domain, dnsConn, ttConn, ch)
+		if err != nil {
+			log.Printf("recvLoop: %v", err)
+		}
+	}()
+
+	// Wait for either sendLoop or recvLoop to return. In normal operation,
+	// we don't expect either to return.
+	<-doneChan
+
+	return nil
 }
 
 func main() {
