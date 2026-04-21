@@ -176,6 +176,43 @@ tunnel-client$ curl --proxy http://127.0.0.1:7000/ https://wtfismyip.com/text
 ```
 
 
+### Dante SOCKS proxy
+
+With the Dante SOCKS proxy (https://www.inet.no/dante/), a minimal
+configuration (/etc/danted.conf) may look like the following:
+
+```
+internal: lo port = 1080
+external: eth0
+
+clientmethod: none
+socksmethod: none
+
+user.privileged: proxy
+user.unprivileged: nobody
+
+client pass {
+        from: lo to: 0/0
+}
+
+socks block {
+        from: 0.0.0.0/0 to: lo
+}
+
+socks block {
+        from: ::/0 to: lo
+}
+
+socks pass {
+        from: lo to: 0.0.0.0/0
+        command: connect
+}
+```
+
+See https://www.inet.no/dante/doc/latest/config/server.html for more
+examples.
+
+
 ### SSH SOCKS proxy
 
 OpenSSH has a built-in SOCKS proxy, which makes it easy to add a SOCKS
