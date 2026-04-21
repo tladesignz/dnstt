@@ -182,7 +182,7 @@ With the Dante SOCKS proxy (https://www.inet.no/dante/), a minimal
 configuration (/etc/danted.conf) may look like the following:
 
 ```
-internal: lo port = 1080
+internal: lo port = 8000
 external: eth0
 
 clientmethod: none
