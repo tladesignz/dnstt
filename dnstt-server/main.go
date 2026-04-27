@@ -257,6 +257,7 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 		stream, err := sess.AcceptStream()
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
+				log.Printf("AcceptStream temporary error: %v", err)
 				continue
 			}
 			return err
@@ -282,6 +283,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 		conn, err := ln.AcceptKCP()
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
+				log.Printf("AcceptKCP temporary error: %v", err)
 				continue
 			}
 			return err
