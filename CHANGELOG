@@ -1,3 +1,24 @@
+## v1.20260501.0
+
+Fixed an error in dnstt-server that could cause the server to stop
+processing traffic, while still running. Rarely, a sendto system call in
+the sendLoop function would cause sendLoop to return with an error.
+Meanwhile, recvLoop would keep running and processing incoming queries,
+but as sendLoop had finished, the server would cease to send back
+responses. In live testing, one possible cause of a sendto error was the
+Linux conntrack table becoming full from heavy traffic and the outgoing
+packet being blocked by a default DENY rule in the local firewall; other
+causes may have been possible. This release contains two changes to fix
+the problem: (1) sendto errors, other than net.ErrClosed, are now only
+logged and do not cause sendLoop to terminate; (2) if sendLoop (or any
+other top-level goroutine) does return, it causes the whole process to
+exit, which will make any failure noticeable and avoid the "running but
+not working" failure mode.
+
+## v1.20241021.0
+
+Added a CC0 COPYING file.
+
 ## v1.20240513.0
 
 Updated utls to v1.6.6. Added a "random" fingerprint ID that maps to
